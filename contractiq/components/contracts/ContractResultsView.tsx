@@ -27,7 +27,14 @@ export function ContractResultsView({ initialData }: { initialData: ContractDeta
   const { contract, keyTerms, customTerms, feedback } = detail
 
   const isDesktop = useIsDesktop()
-  const { focusTerm, goToPage, activeTab, setActiveTab, mobileTab, setMobileTab, reset } = useReviewStore()
+  // Individual selectors: stable references, so effects that depend on actions never loop.
+  const focusTerm = useReviewStore((s) => s.focusTerm)
+  const goToPage = useReviewStore((s) => s.goToPage)
+  const activeTab = useReviewStore((s) => s.activeTab)
+  const setActiveTab = useReviewStore((s) => s.setActiveTab)
+  const mobileTab = useReviewStore((s) => s.mobileTab)
+  const setMobileTab = useReviewStore((s) => s.setMobileTab)
+  const reset = useReviewStore((s) => s.reset)
   const autoFocused = useRef(false)
 
   useEffect(() => () => reset(), [reset])
@@ -92,32 +99,37 @@ export function ContractResultsView({ initialData }: { initialData: ContractDeta
       {publicEnv.calibrationWarning && <CalibrationBanner />}
 
       {isDesktop ? (
-        <PanelGroup direction="horizontal" className="h-[calc(100vh-14rem)] min-h-[560px] rounded-lg border border-border bg-surface">
-          <Panel defaultSize={60} minSize={35} className="overflow-hidden rounded-l-lg">
-            {viewer}
-          </Panel>
-          <PanelResizeHandle
-            className="w-1.5 bg-border transition-colors duration-micro hover:bg-brand-200 data-[resize-handle-state=drag]:bg-brand"
-            aria-label="Resize panels"
-          />
-          <Panel defaultSize={40} minSize={28} className="flex flex-col">
-            <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PanelTab)} className="flex h-full flex-col">
-              <TabsList className="shrink-0 px-2">
-                <TabsTrigger value="terms">Key terms ({keyTerms.length})</TabsTrigger>
-                <TabsTrigger value="chat" data-tour="chat">
-                  <MessageSquare className="h-4 w-4" aria-hidden="true" />
-                  Chat
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="terms" className="flex-1 overflow-y-auto bg-page p-4">
-                {termsPanel}
-              </TabsContent>
-              <TabsContent value="chat" className="min-h-0 flex-1 p-4">
-                {chatPanel}
-              </TabsContent>
-            </Tabs>
-          </Panel>
-        </PanelGroup>
+        // The fixed height lives on a wrapper: PanelGroup sets an inline `height: 100%` that overrides any
+        // height class, which let the workspace grow to the full contract length and pushed the chat
+        // input to the bottom of a very long page. Now each side scrolls inside a screen-sized box.
+        <div className="h-[calc(100vh-14rem)] min-h-[560px]">
+          <PanelGroup direction="horizontal" className="rounded-lg border border-border bg-surface">
+            <Panel defaultSize={60} minSize={35} className="overflow-hidden rounded-l-lg">
+              {viewer}
+            </Panel>
+            <PanelResizeHandle
+              className="w-1.5 bg-border transition-colors duration-micro hover:bg-brand-200 data-[resize-handle-state=drag]:bg-brand"
+              aria-label="Resize panels"
+            />
+            <Panel defaultSize={40} minSize={28} className="flex flex-col">
+              <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PanelTab)} className="flex h-full flex-col">
+                <TabsList className="shrink-0 px-2">
+                  <TabsTrigger value="terms">Key terms ({keyTerms.length})</TabsTrigger>
+                  <TabsTrigger value="chat" data-tour="chat">
+                    <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                    Chat
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value="terms" className="flex-1 overflow-y-auto bg-page p-4">
+                  {termsPanel}
+                </TabsContent>
+                <TabsContent value="chat" className="min-h-0 flex-1 p-4">
+                  {chatPanel}
+                </TabsContent>
+              </Tabs>
+            </Panel>
+          </PanelGroup>
+        </div>
       ) : (
         <Tabs value={mobileTab} onValueChange={(value) => setMobileTab(value as MobileTab)} className="flex flex-col">
           <TabsList className="sticky top-16 z-10 bg-surface">

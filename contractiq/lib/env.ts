@@ -6,8 +6,13 @@ const serverEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(20),
   // Optional locally: usage logging and scheduled jobs degrade gracefully without it.
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20).optional(),
-  OPENAI_API_KEY: z.string().startsWith('sk-'),
-  OPENAI_MODEL: z.string().min(1).default('gpt-4o'),
+  // Azure AI Foundry agent. Optional here so the rest of the app (auth, uploads) still boots before they
+  // are filled in; lib/azure.ts throws a clear error on the first AI call if either is missing.
+  AZURE_API_KEY: z.string().optional(),
+  AZURE_AGENT_ENDPOINT: z.string().optional(),
+  // Required with a project endpoint: the agent's name in Foundry → Agents.
+  AZURE_AGENT_NAME: z.string().optional(),
+  AZURE_API_VERSION: z.string().min(1).optional(),
   NEXT_PUBLIC_APP_URL: z.url().default('http://localhost:3000'),
   USER_ID_HASH_SALT: z
     .string()

@@ -111,13 +111,21 @@ export type ProcessEvent =
   | { step: 'analysing' }
   | { step: 'compiling' }
   | { step: 'done'; contractId: string; termCount: number; detectedType: DetectedContractType | null }
-  | { step: 'error'; code: ErrorCode; message: string }
+  | { step: 'error'; code: ErrorCode; message: string; azureError?: string }
 
-/** SSE payloads streamed by POST /api/contracts/[id]/chat. */
-export type ChatStreamEvents = {
-  meta: { userMessageId: string; sessionId: string }
-  delta: { text: string }
-  replace: { content: string }
-  done: { assistantMessageId: string; citedPages: number[]; latencyMs: number }
-  error: { code: ErrorCode; message: string }
+/** JSON returned by POST /api/contracts/[id]/chat (the Azure agent reply is not streamed). */
+export type ChatAnswerDTO = {
+  userMessageId: string | null
+  sessionId: string
+  assistantMessageId: string | null
+  assistantMessage: string
+  citedPages: number[]
+  latencyMs: number
+}
+
+/** Error body for POST /chat: the standard envelope plus the saved question's id (for retry). */
+export type ChatErrorBody = {
+  error: ApiErrorPayload & { azureError?: string }
+  userMessageId: string | null
+  sessionId: string | null
 }

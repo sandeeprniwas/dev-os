@@ -1,12 +1,12 @@
 import { normalise, splitPages } from '@/lib/pdf/page-markers'
 import { NOT_FOUND_ANSWER } from './citations'
-import type { ChatStreamChunk, LlmGateway, LlmMessage } from './gateway'
+import type { LlmGateway, LlmMessage } from './gateway'
 import type { ExtractionTarget, ExtractionWire } from './schemas/extraction-output'
 
 /*
- * Deterministic stand-in for OpenAI used when LLM_MODE=fixture (E2E tests, offline demos).
+ * Deterministic stand-in for the Azure agent used when LLM_MODE=fixture (E2E tests, offline demos).
  * It derives answers from the contract text itself so the full pipeline — validation, verification,
- * persistence, streaming — runs exactly as in production without network calls.
+ * persistence — runs exactly as in production without network calls.
  */
 
 const STOPWORDS = new Set(['the', 'and', 'of', 'to', 'a', 'an', 'in', 'is', 'are', 'what', 'how', 'does', 'do', 'for', 'there', 'any', 'this', 'with', 'can', 'i', 'my', 'it'])
@@ -74,7 +74,7 @@ function extract(contractText: string, targets: ExtractionTarget[], contractType
 }
 
 export const fixtureGateway: LlmGateway = {
-  model: 'gpt-4o',
+  model: 'fixture',
 
   async completeJson({ messages }) {
     const contractText = tagContent(messages, 'contract')
@@ -94,20 +94,16 @@ export const fixtureGateway: LlmGateway = {
     }
   },
 
-  async *streamChat({ messages }): AsyncGenerator<ChatStreamChunk> {
+  async completeChat({ messages }) {
     const contractText = tagContent(messages, 'contract')
     const question = messageText(messages[messages.length - 1]).replace(/\n\n\(.*\)$/s, '')
     const best = bestSentence(sentences(contractText), keywords(question))
     const answer =
       best && best.score >= 2 ? `Based on the document, "${best.sentence}" [Page ${best.page}]` : NOT_FOUND_ANSWER
-
-    for (const piece of answer.match(/\S+\s*/g) ?? [answer]) {
-      yield { type: 'delta', text: piece }
-    }
-    yield {
-      type: 'end',
-      finishReason: 'stop',
+    return {
+      content: answer,
       refusal: null,
+      finishReason: 'stop',
       usage: { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: { cached_tokens: 0 } },
     }
   },

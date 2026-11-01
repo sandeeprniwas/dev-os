@@ -1,6 +1,7 @@
 import 'server-only'
 import { zodResponseFormat } from 'openai/helpers/zod'
 import { AppError } from '@/lib/api/errors'
+import { describeAzureError } from '@/lib/azure'
 import { LLM_TIMEOUT_MS } from '@/lib/constants/limits'
 import { STANDARD_TERMS } from '@/lib/constants/standard-terms'
 import { completeContract, failContract, getContract } from '@/lib/db/contracts.repo'
@@ -27,8 +28,8 @@ import { slugify } from '@/lib/utils/slugify'
 import type { ProcessEvent } from '@/types/api'
 import type { ContractType } from '@/types/domain'
 
-const EXTRACTION_MAX_TOKENS = 4000
-const responseFormat = zodResponseFormat(extractionWireSchema, 'contract_extraction')
+// Sent to the agent as text: Azure agents reject response_format / model overrides.
+const jsonSchema = zodResponseFormat(extractionWireSchema, 'contract_extraction').json_schema.schema ?? {}
 
 /** Standard terms for the type, then custom terms with collision-safe `custom_*` keys. */
 export function buildTargets(contractType: ContractType, customTermNames: string[]): ExtractionTarget[] {
@@ -112,10 +113,8 @@ export async function processContract({ db, llm, userId, userHash, contractId, e
       attempts++
       const result = await llm.completeJson({
         messages: callMessages,
-        responseFormat,
-        temperature: 0.1,
-        maxTokens: EXTRACTION_MAX_TOKENS,
-        user: userHash,
+        jsonSchema,
+        memoryUserId: userHash,
         timeoutMs: Math.max(1000, Math.min(LLM_TIMEOUT_MS, deadline - Date.now())),
       })
       usage = addUsage(usage, result.usage)
@@ -181,7 +180,8 @@ export async function processContract({ db, llm, userId, userHash, contractId, e
     emit({ step: 'done', contractId, termCount: terms.length, detectedType })
   } catch (error) {
     const appError = error instanceof AppError ? error : new AppError('INTERNAL_ERROR', undefined, { cause: error })
-    logger.error('extraction_failed', { contractId, code: appError.code, cause: appError.details.cause ?? error })
+    const azureError = describeAzureError(error)
+    logger.error('extraction_failed', { contractId, code: appError.code, azureError, cause: appError.details.cause ?? error })
 
     await failContract(admin, contractId, userId, appError.code, appError.message).catch((failError) =>
       logger.error('mark_contract_failed_failed', { contractId, error: failError }),
@@ -199,6 +199,6 @@ export async function processContract({ db, llm, userId, userHash, contractId, e
         finishReason,
       })
     }
-    emit({ step: 'error', code: appError.code, message: appError.message })
+    emit({ step: 'error', code: appError.code, message: appError.message, ...(azureError ? { azureError } : {}) })
   }
 }

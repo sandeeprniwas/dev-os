@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AppError } from '@/lib/api/errors'
-import { ndjsonStream, sseStream } from '@/lib/api/stream'
+import { ndjsonStream } from '@/lib/api/stream'
 import { readNdjson } from '@/lib/utils/read-ndjson'
-import { readSse } from '@/lib/utils/read-sse'
 
 async function collect<T>(iterator: AsyncGenerator<T>): Promise<T[]> {
   const items: T[] = []
@@ -43,28 +42,5 @@ describe('ndjsonStream + readNdjson', () => {
       },
     })
     expect(await collect(readNdjson(body))).toEqual([{ step: 'analysing' }, { step: 'done' }])
-  })
-})
-
-describe('sseStream + readSse', () => {
-  it('round-trips named events', async () => {
-    const response = sseStream(async (send) => {
-      send('delta', { text: 'Based on the document, ' })
-      send('done', { citedPages: [4] })
-    })
-    expect(response.headers.get('Content-Type')).toContain('text/event-stream')
-    expect(await collect(readSse(response.body!))).toEqual([
-      { event: 'delta', data: { text: 'Based on the document, ' } },
-      { event: 'done', data: { citedPages: [4] } },
-    ])
-  })
-
-  it('sends an error event when run throws', async () => {
-    const response = sseStream(async () => {
-      throw new Error('unexpected')
-    })
-    expect(await collect(readSse(response.body!))).toEqual([
-      { event: 'error', data: { code: 'INTERNAL_ERROR', message: 'Something went wrong. Try again.' } },
-    ])
   })
 })

@@ -22,7 +22,7 @@ const PATTERNS: Pattern[] = [
   { id: 'print-instructions', re: /\b(print|show|reveal|repeat|output|dump|recite)\s+(me\s+)?(your|the)\s+(instructions|prompt|rules|guidelines)\b/ },
   {
     id: 'expose-secrets',
-    re: /\b(expose|reveal|show|print|dump|list|leak|give me|output|what (is|are))\b.{0,30}\b(env(ironment)?\s*(variables?|vars?)|\.env\b|api[\s_-]*keys?|secret\s+keys?|service[\s_-]*role|openai\s+key|supabase\s+key|access\s+tokens?|database\s+(contents|tables|rows|dump))\b/,
+    re: /\b(expose|reveal|show|print|dump|list|leak|give me|output|what (is|are))\b.{0,30}\b(env(ironment)?\s*(variables?|vars?)|\.env\b|api[\s_-]*keys?|secret\s+keys?|service[\s_-]*role|openai\s+key|azure\s+key|supabase\s+key|access\s+tokens?|database\s+(contents|tables|rows|dump))\b/,
   },
   { id: 'role-switch-you-are-now', re: /\byou\s+are\s+now\s+(a|an|the|in|my|no\s+longer)\b/ },
   {
@@ -33,7 +33,7 @@ const PATTERNS: Pattern[] = [
   { id: 'jailbreak', re: /\bjail\s*-?\s*break(ing|s|ed)?\b/ },
   { id: 'dan-mode', re: /\b(dan\s+mode|do\s+anything\s+now)\b/ },
   { id: 'developer-mode', re: /\b(developer|dev|god|debug|admin)\s+mode\b/ },
-  { id: 'delimiter-spoofing', re: /<\s*\/?\s*(system|contract|target_terms|instructions?|assistant)\b[^>]*>|<\|\s*(im[\s_]?start|im[\s_]?end|system)\s*\|>|\[\s*\/?\s*(system|inst)\s*\]/ },
+  { id: 'delimiter-spoofing', re: /<\s*\/?\s*(system|contract|target_terms|key_terms|question|conversation_history|previous_response|instructions?|assistant)\b[^>]*>|<\|\s*(im[\s_]?start|im[\s_]?end|system)\s*\|>|\[\s*\/?\s*(system|inst)\s*\]/ },
 ]
 
 // eslint-disable-next-line no-control-regex
@@ -84,7 +84,7 @@ const SYSTEM_PROMPT_MARKERS = [
 const SECRET_PATTERNS = [
   /\bsk-(proj-)?[a-z0-9_-]{20,}/i, // OpenAI keys
   /\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/, // JWTs (Supabase keys)
-  /\b(SUPABASE_SERVICE_ROLE_KEY|OPENAI_API_KEY|USER_ID_HASH_SALT)\b/,
+  /\b(SUPABASE_SERVICE_ROLE_KEY|AZURE_API_KEY|AZURE_AGENT_ENDPOINT|OPENAI_API_KEY|USER_ID_HASH_SALT)\b/,
 ]
 
 export const OUTPUT_BLOCKED_MESSAGE = 'I can only answer questions about the content of this contract.'

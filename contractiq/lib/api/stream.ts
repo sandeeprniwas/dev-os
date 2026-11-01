@@ -31,30 +31,3 @@ export function ndjsonStream(run: (emit: (event: object) => void) => Promise<voi
     headers: { ...STREAM_HEADERS, 'Content-Type': 'application/x-ndjson; charset=utf-8' },
   })
 }
-
-/**
- * Server-Sent Events stream (used by POST /chat). Frames: `event: <name>\ndata: <json>\n\n`.
- * Errors thrown by `run` are sent as `event: error`; the stream always closes.
- */
-export function sseStream(run: (send: (event: string, data: object) => void) => Promise<void>): Response {
-  const encoder = new TextEncoder()
-  const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (event: string, data: object) =>
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
-      try {
-        await run(send)
-      } catch (error) {
-        const appError = normaliseError(error)
-        logger.error('sse_stream_failed', { code: appError.code, error })
-        send('error', { code: appError.code, message: appError.message })
-      } finally {
-        controller.close()
-      }
-    },
-  })
-  return new Response(body, {
-    status: 200,
-    headers: { ...STREAM_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' },
-  })
-}

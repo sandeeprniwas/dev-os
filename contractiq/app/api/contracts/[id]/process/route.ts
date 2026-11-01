@@ -14,7 +14,7 @@ import type { ProcessEvent } from '@/types/api'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-export const maxDuration = 26
+export const maxDuration = 60
 
 export const POST = withApiHandler<{ id: string }>(async (_request, { params }) => {
   const id = parseIdParam(params)

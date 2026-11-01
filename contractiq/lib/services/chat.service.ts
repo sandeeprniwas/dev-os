@@ -1,5 +1,6 @@
 import 'server-only'
 import { AppError } from '@/lib/api/errors'
+import { describeAzureError } from '@/lib/azure'
 import { LLM_TIMEOUT_MS, MAX_CHAT_MESSAGES } from '@/lib/constants/limits'
 import {
   getChatSession,
@@ -8,13 +9,14 @@ import {
   insertChatMessage,
   listChatMessages,
 } from '@/lib/db/chat.repo'
+import { listKeyTerms } from '@/lib/db/key-terms.repo'
 import { logUsage } from '@/lib/db/llm-usage.repo'
 import { toChatMessageDTO } from '@/lib/db/mappers'
 import type { DbClient } from '@/lib/db/types'
 import { ensurePrefix, extractCitedPages, isNotFoundAnswer } from '@/lib/llm/citations'
 import { classifyQuery } from '@/lib/llm/classify-query'
 import type { TokenUsage } from '@/lib/llm/cost'
-import type { ChatStreamChunk, LlmGateway } from '@/lib/llm/gateway'
+import type { LlmGateway } from '@/lib/llm/gateway'
 import { buildChatMessages } from '@/lib/llm/prompts/chat'
 import { withRetry } from '@/lib/llm/with-retry'
 import { verifyContractOwnership, verifySessionOwnership } from '@/lib/security/chatSecurity'
@@ -23,10 +25,8 @@ import { assertMessageLength, getMaxChatHistory } from '@/lib/security/tokenLimi
 import { requireAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/utils/logger'
 import { chatPostSchema } from '@/lib/validation/chat'
-import type { ChatHistoryDTO, ChatStreamEvents } from '@/types/api'
-import type { ChatMessageRow, ContractRow } from '@/types/domain'
-
-const CHAT_MAX_TOKENS = 1000
+import type { ChatAnswerDTO, ChatHistoryDTO } from '@/types/api'
+import type { ChatMessageRow, ContractRow, KeyTermRow } from '@/types/domain'
 
 export async function getChatHistory(db: DbClient, contractId: string, userId: string): Promise<ChatHistoryDTO> {
   await verifyContractOwnership(db, contractId, userId)
@@ -90,31 +90,38 @@ export async function prepareChatTurn(
   return { contract, sessionId: session.id, userMessage, history }
 }
 
-type Send = <E extends keyof ChatStreamEvents>(event: E, data: ChatStreamEvents[E]) => void
-
-/** Streams the grounded answer and persists it (contract-chat spec §6.2). Never throws. */
-export async function streamChatAnswer(args: {
+/**
+ * Asks the Azure agent for a grounded answer and persists it (contract-chat spec §6.2).
+ * Throws AppError on failure (cause carries the Azure error). Saving the reply is best-effort:
+ * if the write fails the answer is still returned with a null id.
+ */
+export async function answerChat(args: {
   db: DbClient
   llm: LlmGateway
   userId: string
   userHash: string
   turn: PreparedChatTurn
-  send: Send
   deadline: number
-}): Promise<void> {
-  const { db, llm, userId, userHash, turn, send, deadline } = args
+}): Promise<ChatAnswerDTO> {
+  const { db, llm, userId, userHash, turn, deadline } = args
   const startedAt = Date.now()
   let usage: TokenUsage | null = null
   let finishReason: string | null = null
   let attempts = 0
 
-  send('meta', { userMessageId: turn.userMessage.id, sessionId: turn.sessionId })
+  let keyTerms: KeyTermRow[] = []
+  try {
+    keyTerms = await listKeyTerms(db, turn.contract.id)
+  } catch (error) {
+    logger.warn('chat_key_terms_unavailable', { contractId: turn.contract.id, error })
+  }
 
   const { messages, droppedHistory } = buildChatMessages({
     title: turn.contract.title,
     contractType: turn.contract.contract_type,
     pageCount: turn.contract.page_count,
     contractText: turn.contract.contract_text,
+    keyTerms: keyTerms.map((t) => ({ name: t.term_name, value: t.value, page: t.page_number })),
     history: turn.history,
     message: turn.userMessage.content,
     queryClass: classifyQuery(turn.userMessage.content),
@@ -123,57 +130,43 @@ export async function streamChatAnswer(args: {
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), Math.max(1000, Math.min(LLM_TIMEOUT_MS, deadline - Date.now())))
-  let full = ''
 
   try {
-    // Retry only failures that happen before the first token reaches the client.
-    const { result: stream } = await withRetry(
+    const { result } = await withRetry(
       async () => {
         attempts++
-        const iterator = llm
-          .streamChat({ messages, temperature: 0.4, maxTokens: CHAT_MAX_TOKENS, user: userHash, signal: controller.signal })
-          [Symbol.asyncIterator]()
-        const first = await iterator.next()
-        return { iterator, first }
+        return llm.completeChat({ messages, signal: controller.signal, memoryUserId: userHash })
       },
       { deadline },
     )
+    finishReason = result.finishReason
+    usage = result.usage
 
-    let refusal: string | null = null
-    const handle = (chunk: ChatStreamChunk) => {
-      if (chunk.type === 'delta') {
-        full += chunk.text
-        send('delta', { text: chunk.text })
-      } else {
-        finishReason = chunk.finishReason
-        refusal = chunk.refusal
-        usage = chunk.usage
-      }
-    }
-    if (!stream.first.done) handle(stream.first.value)
-    for (let next = await stream.iterator.next(); !next.done; next = await stream.iterator.next()) {
-      handle(next.value)
-    }
-
-    if (refusal || finishReason === 'content_filter') throw new AppError('LLM_REFUSED')
-    if (!full.trim()) throw new AppError('LLM_UNAVAILABLE')
+    if (result.refusal || finishReason === 'content_filter') throw new AppError('LLM_REFUSED')
+    const full = result.content ?? ''
+    if (!full.trim()) throw new AppError('LLM_UNAVAILABLE', 'The AI agent returned an empty answer. Try again.')
 
     const guarded = guardModelOutput(full)
     if (!guarded.safe) logger.warn('chat_output_blocked', { contractId: turn.contract.id })
     const content = guarded.safe ? ensurePrefix(full) : guarded.text
-    if (content !== full) send('replace', { content })
     const citedPages = isNotFoundAnswer(content) ? [] : extractCitedPages(content, turn.contract.page_count)
     const latencyMs = Date.now() - startedAt
 
     // Assistant messages are server-authored only (clients may insert role='user' rows exclusively).
-    const assistant = await insertChatMessage(requireAdminClient(), {
-      session_id: turn.sessionId,
-      user_id: userId,
-      role: 'assistant',
-      content: content.slice(0, 8000),
-      cited_pages: citedPages,
-      latency_ms: latencyMs,
-    })
+    let assistantMessageId: string | null = null
+    try {
+      const assistant = await insertChatMessage(requireAdminClient(), {
+        session_id: turn.sessionId,
+        user_id: userId,
+        role: 'assistant',
+        content: content.slice(0, 8000),
+        cited_pages: citedPages,
+        latency_ms: latencyMs,
+      })
+      assistantMessageId = assistant.id
+    } catch (error) {
+      logger.error('chat_assistant_save_failed', { contractId: turn.contract.id, error })
+    }
 
     await logUsage({
       userId,
@@ -186,16 +179,29 @@ export async function streamChatAnswer(args: {
       success: true,
       finishReason,
     })
-    send('done', { assistantMessageId: assistant.id, citedPages, latencyMs })
+
+    return {
+      userMessageId: turn.userMessage.id,
+      sessionId: turn.sessionId,
+      assistantMessageId,
+      assistantMessage: content,
+      citedPages,
+      latencyMs,
+    }
   } catch (error) {
     const aborted = controller.signal.aborted
     const appError =
       error instanceof AppError
         ? error
-        : new AppError(aborted ? 'TIMEOUT' : 'LLM_UNAVAILABLE', aborted ? "That took too long. Try again." : undefined, {
+        : new AppError(aborted ? 'TIMEOUT' : 'LLM_UNAVAILABLE', aborted ? 'That took too long. Try again.' : undefined, {
             cause: error,
           })
-    logger.error('chat_answer_failed', { contractId: turn.contract.id, code: appError.code, cause: appError.details.cause ?? error })
+    logger.error('chat_answer_failed', {
+      contractId: turn.contract.id,
+      code: appError.code,
+      azureError: describeAzureError(error),
+      cause: appError.details.cause ?? error,
+    })
     await logUsage({
       userId,
       contractId: turn.contract.id,
@@ -207,7 +213,7 @@ export async function streamChatAnswer(args: {
       success: false,
       finishReason,
     })
-    send('error', { code: appError.code, message: appError.message })
+    throw appError
   } finally {
     clearTimeout(timer)
   }

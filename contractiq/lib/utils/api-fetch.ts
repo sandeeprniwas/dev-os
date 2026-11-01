@@ -10,6 +10,10 @@ export class ApiClientError extends Error {
   readonly requestId?: string
   readonly fields?: Record<string, string>
   readonly retryAfterSeconds?: number
+  /** Upstream AI-provider error text, when the server surfaced it. */
+  readonly azureError?: string
+  /** Full parsed error body, for endpoints that add fields beside `error`. */
+  readonly body?: unknown
 
   constructor(init: {
     code: ApiClientError['code']
@@ -18,6 +22,8 @@ export class ApiClientError extends Error {
     requestId?: string
     fields?: Record<string, string>
     retryAfterSeconds?: number
+    azureError?: string
+    body?: unknown
   }) {
     super(init.message)
     this.name = 'ApiClientError'
@@ -26,6 +32,8 @@ export class ApiClientError extends Error {
     this.requestId = init.requestId
     this.fields = init.fields
     this.retryAfterSeconds = init.retryAfterSeconds
+    this.azureError = init.azureError
+    this.body = init.body
   }
 }
 
@@ -37,7 +45,7 @@ type ApiFetchOptions = Omit<RequestInit, 'body'> & {
 
 /**
  * Same-origin JSON fetch for client components. Plain objects are sent as JSON; FormData as-is.
- * Throws ApiClientError on non-2xx. Use apiRequest() to get the raw Response (streaming endpoints).
+ * Throws ApiClientError on non-2xx. Use apiRequest() to get the raw Response.
  */
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const response = await apiRequest(path, options)
@@ -77,9 +85,11 @@ export async function apiRequest(path: string, options: ApiFetchOptions = {}): P
 
 export async function toApiClientError(response: Response): Promise<ApiClientError> {
   const retryAfter = Number(response.headers.get('Retry-After'))
-  let payload: ApiErrorPayload | undefined
+  let payload: (ApiErrorPayload & { azureError?: string }) | undefined
+  let body: unknown
   try {
-    payload = ((await response.json()) as { error?: ApiErrorPayload }).error
+    body = await response.json()
+    payload = (body as { error?: ApiErrorPayload & { azureError?: string } }).error
   } catch {
     payload = undefined
   }
@@ -91,5 +101,7 @@ export async function toApiClientError(response: Response): Promise<ApiClientErr
     requestId: payload?.requestId,
     fields: payload?.fields,
     retryAfterSeconds: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+    azureError: payload?.azureError,
+    body,
   })
 }

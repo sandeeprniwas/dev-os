@@ -23,14 +23,16 @@ RULES
 export const MAX_CHAT_PROMPT_TOKENS = 100_000
 
 /**
- * Append-only message order (static system → contract → history → new turn) so OpenAI's automatic
- * prefix caching reuses everything but the newest turn. Oldest history is dropped past the token budget.
+ * Append-only message order (static system → contract → history → new turn) so prompt caching
+ * can reuse everything but the newest turn. Oldest history is dropped past the token budget.
  */
 export function buildChatMessages(args: {
   title: string
   contractType: ContractType
   pageCount: number
   contractText: string
+  /** Already-extracted key terms, as a quick reference next to the contract text. */
+  keyTerms?: { name: string; value: string | null; page: number | null }[]
   history: Pick<ChatMessageRow, 'role' | 'content'>[]
   message: string
   queryClass: QueryClass
@@ -39,7 +41,11 @@ export function buildChatMessages(args: {
     { role: 'system', content: CHAT_SYSTEM_PROMPT },
     {
       role: 'system',
-      content: `<contract title=${JSON.stringify(args.title)} type="${args.contractType}" pages="${args.pageCount}">\n${args.contractText}\n</contract>`,
+      content:
+        `<contract title=${JSON.stringify(args.title)} type="${args.contractType}" pages="${args.pageCount}">\n${args.contractText}\n</contract>` +
+        (args.keyTerms?.length
+          ? `\n\n<key_terms note="Extracted earlier; verify against the contract text before relying on them.">\n${JSON.stringify(args.keyTerms)}\n</key_terms>`
+          : ''),
     },
   ]
   const turn: LlmMessage = { role: 'user', content: args.message + QUERY_CLASS_HINTS[args.queryClass] }

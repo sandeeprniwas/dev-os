@@ -4,19 +4,18 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { ERROR_DEFINITIONS } from '@/lib/api/errors'
 import { MAX_CHAT_MESSAGES } from '@/lib/constants/limits'
-import { apiFetch, apiRequest, ApiClientError } from '@/lib/utils/api-fetch'
-import { readSse } from '@/lib/utils/read-sse'
-import type { ChatHistoryDTO, ChatMessageDTO, ChatStreamEvents } from '@/types/api'
+import { apiFetch, ApiClientError } from '@/lib/utils/api-fetch'
+import type { ChatAnswerDTO, ChatErrorBody, ChatHistoryDTO, ChatMessageDTO } from '@/types/api'
 
+/** 'streaming' = waiting for the agent's reply (shows the typing indicator). */
 export type ChatMessageVM = ChatMessageDTO & { status: 'sent' | 'streaming' | 'failed'; errorMessage?: string }
 
 export const chatKey = (contractId: string) => ['chat', contractId] as const
 
 const tempId = () => `temp-${crypto.randomUUID()}`
 
-/** Loads persisted history and streams new answers over SSE (contract-chat spec §7.1). */
+/** Loads persisted history and asks the Azure agent for answers via plain JSON fetch (contract-chat spec §7.1). */
 export function useContractChat(contractId: string, enabled: boolean) {
   const router = useRouter()
   const queryClient = useQueryClient()
@@ -54,65 +53,39 @@ export function useContractChat(contractId: string, enabled: boolean) {
         { id: assistantTemp, role: 'assistant', content: '', citedPages: [], createdAt: now, status: 'streaming' },
       ])
 
-      const patchAssistant = (patch: Partial<ChatMessageVM>) =>
-        setPending((current) => current.map((m) => (m.id === assistantTemp ? { ...m, ...patch } : m)))
-
       let userMessageId = retryOfMessageId ?? userTemp
       try {
-        const response = await apiRequest(`/api/contracts/${contractId}/chat`, {
+        const answer = await apiFetch<ChatAnswerDTO>(`/api/contracts/${contractId}/chat`, {
           method: 'POST',
           body: { message: text, ...(retryOfMessageId ? { retryOfMessageId } : {}) },
         })
+        if (answer.userMessageId) userMessageId = answer.userMessageId
 
-        let content = ''
-        let finished = false
-        for await (const frame of readSse<ChatStreamEvents[keyof ChatStreamEvents]>(response.body!)) {
-          if (frame.event === 'meta') {
-            const meta = frame.data as ChatStreamEvents['meta']
-            const previous = userMessageId
-            userMessageId = meta.userMessageId
-            setPending((current) => current.map((m) => (m.id === previous ? { ...m, id: meta.userMessageId } : m)))
-          } else if (frame.event === 'delta') {
-            content += (frame.data as ChatStreamEvents['delta']).text
-            patchAssistant({ content })
-          } else if (frame.event === 'replace') {
-            content = (frame.data as ChatStreamEvents['replace']).content
-            patchAssistant({ content })
-          } else if (frame.event === 'done') {
-            const done = frame.data as ChatStreamEvents['done']
-            finished = true
-            const assistant: ChatMessageDTO = { id: done.assistantMessageId, role: 'assistant', content, citedPages: done.citedPages, createdAt: new Date().toISOString() }
-            const user: ChatMessageDTO = { id: userMessageId, role: 'user', content: text, citedPages: [], createdAt: now }
-            queryClient.setQueryData<ChatHistoryDTO>(chatKey(contractId), (data) => {
-              const base = data ?? { session: null, messages: [] }
-              const existing = base.messages.filter((m) => m.id !== userMessageId)
-              return {
-                session: base.session ? { ...base.session, messageCount: base.session.messageCount + (retryOfMessageId ? 1 : 2) } : base.session,
-                messages: [...existing, user, assistant],
-              }
-            })
-            setPending([])
-          } else if (frame.event === 'error') {
-            finished = true
-            const error = frame.data as ChatStreamEvents['error']
-            setPending((current) =>
-              current.map((m) =>
-                m.id === assistantTemp ? { ...m, content: '', status: 'failed', errorMessage: error.message, id: `failed-${userMessageId}` } : m,
-              ),
-            )
+        const assistant: ChatMessageDTO = {
+          id: answer.assistantMessageId ?? tempId(),
+          role: 'assistant',
+          content: answer.assistantMessage,
+          citedPages: answer.citedPages,
+          createdAt: new Date().toISOString(),
+        }
+        const user: ChatMessageDTO = { id: userMessageId, role: 'user', content: text, citedPages: [], createdAt: now }
+        queryClient.setQueryData<ChatHistoryDTO>(chatKey(contractId), (data) => {
+          const base = data ?? { session: null, messages: [] }
+          const existing = base.messages.filter((m) => m.id !== userMessageId)
+          return {
+            session: base.session
+              ? { ...base.session, messageCount: base.session.messageCount + (retryOfMessageId ? 1 : 2) }
+              : { id: answer.sessionId, messageCount: retryOfMessageId ? 1 : 2 },
+            messages: [...existing, user, assistant],
           }
-        }
-        if (!finished) {
-          setPending((current) =>
-            current.map((m) =>
-              m.id === assistantTemp ? { ...m, content: '', status: 'failed', errorMessage: ERROR_DEFINITIONS.TIMEOUT.message, id: `failed-${userMessageId}` } : m,
-            ),
-          )
-        }
+        })
+        setPending([])
       } catch (error) {
         const apiError = error instanceof ApiClientError ? error : null
-        // 4xx before streaming: the server rejected the request, so the question was not saved.
-        const rejected = apiError !== null && apiError.status >= 400 && apiError.status < 500
+        // The server returns the saved question's id when the AI call (not the request) failed.
+        const savedUserId = (apiError?.body as Partial<ChatErrorBody> | undefined)?.userMessageId ?? null
+        // 4xx without a saved question: the server rejected the request before calling the AI.
+        const rejected = apiError !== null && apiError.status >= 400 && apiError.status < 500 && !savedUserId
 
         if (rejected) {
           setPending((current) => current.filter((m) => m.id !== assistantTemp && m.id !== userTemp))
@@ -122,10 +95,21 @@ export function useContractChat(contractId: string, enabled: boolean) {
             router.replace('/dashboard')
           } else toast.error(apiError.message)
         } else {
+          if (savedUserId) {
+            const previous = userMessageId
+            userMessageId = savedUserId
+            setPending((current) => current.map((m) => (m.id === previous ? { ...m, id: savedUserId } : m)))
+          }
+          const message = apiError?.message ?? "I couldn't answer right now."
           setPending((current) =>
             current.map((m) =>
               m.id === assistantTemp
-                ? { ...m, status: 'failed', errorMessage: apiError?.message ?? "I couldn't answer right now.", id: `failed-${userMessageId}` }
+                ? {
+                    ...m,
+                    status: 'failed',
+                    errorMessage: apiError?.azureError ? `${message} (Azure: ${apiError.azureError})` : message,
+                    id: `failed-${userMessageId}`,
+                  }
                 : m,
             ),
           )

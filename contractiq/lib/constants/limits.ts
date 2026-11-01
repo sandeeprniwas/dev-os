@@ -9,5 +9,6 @@ export const LOW_CONFIDENCE = 50
 export const HIGH_CONFIDENCE = 80
 export const SIGNED_URL_TTL_SECONDS = 3600
 export const STALE_PROCESSING_MS = 120_000
-export const PROCESS_DEADLINE_MS = 24_000
-export const LLM_TIMEOUT_MS = 22_000
+// Azure AI Foundry agent calls can take 20–30 s, so routes run up to 60 s (maxDuration).
+export const PROCESS_DEADLINE_MS = 55_000
+export const LLM_TIMEOUT_MS = 50_000
