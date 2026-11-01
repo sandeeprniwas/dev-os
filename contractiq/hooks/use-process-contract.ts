@@ -13,7 +13,7 @@ export type ProcessStep = 'idle' | 'saving' | 'analysing' | 'compiling' | 'waiti
 export type ProcessError = { code: string; message: string }
 
 const POLL_INTERVAL_MS = 3000
-const POLL_TIMEOUT_MS = 45_000
+const POLL_TIMEOUT_MS = 75_000 // longer than the 55 s server deadline for Azure agent calls
 
 /**
  * Streams POST /process (NDJSON) and tracks the 3-step progress. On 409 ALREADY_PROCESSING it polls
@@ -102,7 +102,8 @@ export function useProcessContract(contractId: string | null, options: { navigat
         } else if (event.step === 'error') {
           finished = true
           setStep('error')
-          setError({ code: event.code, message: event.message })
+          // Show the real Azure error next to the friendly message, so setup problems can be diagnosed.
+          setError({ code: event.code, message: event.azureError ? `${event.message} (Azure: ${event.azureError})` : event.message })
         }
       }
     } catch {

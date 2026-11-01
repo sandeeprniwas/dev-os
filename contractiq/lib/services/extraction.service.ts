@@ -183,7 +183,8 @@ export async function processContract({ db, llm, userId, userHash, contractId, e
     const azureError = describeAzureError(error)
     logger.error('extraction_failed', { contractId, code: appError.code, azureError, cause: appError.details.cause ?? error })
 
-    await failContract(admin, contractId, userId, appError.code, appError.message).catch((failError) =>
+    const storedMessage = azureError ? `${appError.message} (Azure: ${azureError})`.slice(0, 500) : appError.message
+    await failContract(admin, contractId, userId, appError.code, storedMessage).catch((failError) =>
       logger.error('mark_contract_failed_failed', { contractId, error: failError }),
     )
     if (calledModel) {

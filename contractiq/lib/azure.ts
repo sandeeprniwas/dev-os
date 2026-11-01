@@ -66,16 +66,22 @@ export function getAzureAgent(): AzureAgent {
   const env = getEnv()
   const apiKey = env.AZURE_API_KEY
   const endpoint = env.AZURE_AGENT_ENDPOINT
-  if (!apiKey || !endpoint) {
-    throw new Error('AZURE_API_KEY and AZURE_AGENT_ENDPOINT must be set in .env.local')
+  const isProject = !!endpoint && !agentEndpointProblem(endpoint) && parseAgentEndpoint(endpoint).kind === 'project'
+  // Report every missing variable at once (AZURE_AGENT_NAME is needed unless the endpoint is an application URL).
+  const missing = [
+    !apiKey && 'AZURE_API_KEY',
+    !endpoint && 'AZURE_AGENT_ENDPOINT',
+    (!endpoint || isProject) && !env.AZURE_AGENT_NAME && 'AZURE_AGENT_NAME',
+  ].filter(Boolean)
+  if (missing.length > 0 || !apiKey || !endpoint) {
+    throw new Error(
+      `AZURE_ settings missing: ${missing.join(', ')}. Set them in .env.local locally, or in your host's environment variables (then redeploy).`,
+    )
   }
   const problem = agentEndpointProblem(endpoint)
   if (problem) throw new Error(`AZURE_AGENT_ENDPOINT ${problem}`)
 
   const parsed = parseAgentEndpoint(endpoint)
-  if (parsed.kind === 'project' && !env.AZURE_AGENT_NAME) {
-    throw new Error('AZURE_AGENT_NAME must be set in .env.local when AZURE_AGENT_ENDPOINT is a project endpoint')
-  }
 
   const apiVersion = parsed.kind === 'application' ? (env.AZURE_API_VERSION ?? parsed.apiVersion ?? DEFAULT_AZURE_API_VERSION) : env.AZURE_API_VERSION
   const client = new OpenAI({
